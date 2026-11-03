@@ -1,6 +1,7 @@
 # Bilibili transcript copy
 
-A userscript that puts one pill right after the 「展开更多」 toggle in a B站 video description. Click
+A userscript that puts one pill in a B站 video description, after the 「展开更多」 toggle when a long
+description has one and under the text when a short description has no toggle. Click
 it and the transcript of the part playing now goes to your clipboard.
 
 ![A screenshot from the B站 watch page](img/screenshot.png)
@@ -25,8 +26,10 @@ and the tab's cookies ride along. Otherwise it falls back to `fetch` and
 
 ## Using it
 
-The pill copies the look of the 展开更多 toggle: same background, text colour, size and radius. The
-label follows the page language, 字幕 on a Chinese page and Transcript on the English one.
+The pill copies the look of the 展开更多 toggle, or of the description block when the page has no
+such toggle: same background, text colour, size and radius. The label follows the page language, 字幕
+on a Chinese page and Transcript on the English one; with no toggle to read, the English page is the
+one served under `/en/video/`.
 
 Click it and:
 

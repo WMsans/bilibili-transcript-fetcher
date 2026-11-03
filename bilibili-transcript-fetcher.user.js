@@ -227,12 +227,16 @@ let pill = null, pillHost = null;
 function build() {
   const h = host();
   if (!h) return;
-  if (pill && pillHost === h) return;
   const toggle = h.querySelector('.toggle-btn');
-  const ref = h.querySelector('.toggle-btn-text') || toggle;
-  if (!ref) return;
+  const hidden = getComputedStyle(h).display === 'none'; // an empty description hides #v_desc itself
+  // a description short enough to fit has no 「展开」toggle at all, so anchor on the block, not the toggle
+  const at = toggle ? toggle.parentNode : (hidden && h.parentNode ? h.parentNode : h);
+  if (pill && pillHost === at) return;
+  const ref = h.querySelector('.toggle-btn-text') || toggle || h;
   const cs = getComputedStyle(ref); // look like the existing toggle, do not invent a style
-  const cn = /[\u4e00-\u9fff]/.test(ref.textContent || '');
+  // no toggle to read the language off: shortcut: the /en/video/ route is the only signal then, upgrade
+  // if bilibili ever ships an English UI on the plain route
+  const cn = toggle ? /[\u4e00-\u9fff]/.test(ref.textContent || '') : !/^\/en\//.test(location.pathname);
   const T = cn
     ? { label: '字幕', fetching: '获取…', tip: "copy this part's transcript",
       copied: (n, d, p) => '✓ ' + n + ' 字符 copied — ' + d + ' · ' + p,
@@ -257,10 +261,11 @@ function build() {
     ['box-sizing', 'border-box']
   ].forEach((p) => { if (p[1]) el.style[p[0]] = p[1]; });
 
-  if (toggle && toggle.nextSibling) toggle.parentNode.insertBefore(el, toggle.nextSibling);
-  else h.appendChild(el);
+  if (toggle) at.insertBefore(el, toggle.nextSibling); // insertBefore(x, null) appends, as before
+  else if (hidden) at.insertBefore(el, h.nextSibling); // inside a display:none parent nothing renders
+  else at.appendChild(el);
   pill = el;
-  pillHost = h;
+  pillHost = at;
 
   const note = (line, ms) => {
     const box = document.createElement('div');
