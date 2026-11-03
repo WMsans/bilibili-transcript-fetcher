@@ -1,65 +1,67 @@
 # Bilibili transcript copy
 
-A browser userscript that puts a small pill right after the 「展开」 / "Expand More" toggle in a
-B站 video description. One click copies the transcript of the part currently playing to your
-clipboard, and tells you what it copied.
+A userscript that puts one pill right after the 「展开更多」 toggle in a B站 video description. Click
+it and the transcript of the part playing now goes to your clipboard.
 
-No server, no extension to install, no tokens: it runs inside the watch page and reuses that tab's
-cookies.
+![A screenshot from the B站 watch page](img/screenshot.png)
+
+It runs inside the watch page and reuses that tab's cookies, so there is no server to run and no
+token to paste in.
 
 ## Install
 
-1. Add a userscript manager — [Tampermonkey](https://www.tampermonkey.net/) or
+1. Add a userscript manager: [Tampermonkey](https://www.tampermonkey.net/) or
    [Violent Monkey](https://violentmonkey.github.io/).
-2. Paste the whole of `bilibili-transcript-fetcher.user.js` (the `==UserScript==` header included) as a new script.
-3. Open any `bilibili.com/video/BV…` page **in a logged-in tab** and click the pill.
+2. Create a new script and paste all of `bilibili-transcript-fetcher.user.js`, `==UserScript==` header included.
+3. Allow the request to visit external sites when the manager asks (the script calls `api.bilibili.com`).
+4. Open a `bilibili.com/video/BV…` page in a tab that is logged in.
 
-The `@match` lines only cover `www.bilibili.com/video/*`, `/en/video/*` and `bilibili.com/video/*`,
-so the script is inert everywhere else.
+`@match` covers `www.bilibili.com/video/*`, `/en/video/*` and `bilibili.com/video/*`, so the script
+does nothing on any other page.
 
-Tampermonkey's `GM_xmlhttpRequest` and `GM_setClipboard` are preferred when the manager provides
-them (no CORS, carries the tab's cookies); without them the script falls back to in-page
-`fetch` and `navigator.clipboard.writeText`.
+Where the manager provides `GM_xmlhttpRequest` and `GM_setClipboard`, the script uses them: no CORS,
+and the tab's cookies ride along. Otherwise it falls back to `fetch` and
+`navigator.clipboard.writeText`.
 
 ## Using it
 
-The pill looks like the toggle next to it, byte-for-byte — same background, text colour, size,
-radius. Its label follows the page language: `字幕` on a Chinese page, `Transcript` on an English one.
+The pill copies the look of the 展开更多 toggle: same background, text colour, size and radius. The
+label follows the page language, 字幕 on a Chinese page and Transcript on the English one.
 
-Click it:
+Click it and:
 
-1. The pill's words swap to `获取…` / `Fetching…`.
-2. Allow all visit to external sites.
-3. The transcript is copied to the clipboard as plain text, **one cue per line, no timestamps**.
-4. A note appears under the description, e.g. `✓ 4310 characters copied — zh-CN · P2/5`, and fades after 6 seconds.
-5. The pill returns to its normal label.
+1. the label changes to 获取… or Fetching…
+2. the transcript lands on the clipboard as plain text, one cue per line, timestamps dropped
+3. a note under the description reports the character count, which track and which part, then fades
+   out after a few seconds
+4. the label returns to normal
 
-The part number is read from the URL (`?p=`), then from the page's own state, and re-checked against
-the part list; a mismatch falls back to a fresh part-list lookup rather than guessing P1. Only that
-part is fetched.
+The part number comes from `?p=`, then from the page state, and is checked against the part list.
+When the page state is stale the script asks the part list again instead of assuming P1, and it only
+fetches the part playing now.
 
-Track preference: `zh-Hans` → `zh-CN` → `ai-zh` → any other `zh…` → whatever the list has first.
-The note reports which one was used.
+Track order: `zh-Hans`, `zh-CN`, `ai-zh`, any other `zh…`, then whatever the list has first. The note
+says which one was used.
 
 ## Messages
 
 | You see | It means |
 |---|---|
-| `subtitle list empty — this tab is not logged in (…)` | Login-gated tracks (AI subtitles) come back empty when logged out, so an empty list is reported as a login problem, never as "this video has no subtitles". |
-| `no subtitle track for this part` | Logged in, and the part genuinely has no track. |
-| `B 站 throttled this IP（风控）— retry later` | Risk control answered. One retry is made with refreshed keys, then it stops. |
-| `copy failed: <reason>` | Anything else — HTTP status, non-JSON body, clipboard refused. |
-| `self-check failed: <case>` | The signing code is broken. Reported the moment the page loads; the button is never allowed to quietly copy the wrong text. |
+| `subtitle list empty — this tab is not logged in (AI subtitles also come back empty logged out)` | Login-gated tracks come back empty when logged out. An empty list is reported as a login problem, never as a missing subtitle. |
+| `no subtitle track for this part` | Logged in, and the part really has none. |
+| `B 站 throttled this IP（风控）— retry later` | Risk control answered. The script refreshes its keys, retries once, then stops. |
+| `copy failed: <reason>` | Anything else: HTTP status, a body that is not JSON, a refused clipboard. |
+| `self-check failed: <case>` | The signing code is wrong. Reported as the page loads, before the button can copy the wrong text. |
 
 ## How it works
 
-`window.__INITIAL_STATE__` / part list → `x/web-interface/nav` for the current WBI keys → signed
-`x/player/wbi/v2` request (MD5 + mixin over the sorted query) → subtitle body JSON.
+`window.__INITIAL_STATE__` or the part list identifies the video, `x/web-interface/nav` supplies the
+current WBI keys, a signed `x/player/wbi/v2` call returns the subtitle list, and each track body is
+plain JSON.
 
-Signed requests are deliberate: the unsigned player endpoint answers HTTP 200 with valid JSON
-carrying *another* video's subtitles when risk-controlled, which is indistinguishable from a good
-fetch. Signature rejection (`-352`, `-403`, HTTP 412) drops the cached keys and retries once — no
-retry loop. WBI keys are cached for 10 minutes per tab.
+The signature is the point. Under risk control the unsigned player endpoint answers HTTP 200 with
+valid JSON carrying another video's subtitles, and the response gives no hint. When a signature is
+rejected (`-352`, `-403`, HTTP 412) the script drops the cached keys and retries once. Keys live for
+10 minutes per tab.
 
-Nothing is sent that the page doesn't already know, nothing is stored, and no cookie or token is
-ever read or printed.
+No cookie or token is read, printed or stored.
