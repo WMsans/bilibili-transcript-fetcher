@@ -231,11 +231,17 @@ function build() {
   const hidden = getComputedStyle(h).display === 'none'; // an empty description hides #v_desc itself
   // a description short enough to fit has no 「展开」toggle at all, so anchor on the block, not the toggle
   const at = toggle ? toggle.parentNode : (hidden && h.parentNode ? h.parentNode : h);
-  if (pill && pillHost === at) return;
+  if (pill && pillHost === at && document.contains(pill)) return; // ours is still in the live document
+  if (pill) pill.remove(); // host rebuilt around our old copy: drop it, do not leave a second pill
   const ref = h.querySelector('.toggle-btn-text') || toggle || h;
   const cs = getComputedStyle(ref); // look like the existing toggle, do not invent a style
   // no toggle to read the language off: shortcut: the /en/video/ route is the only signal then, upgrade
   // if bilibili ever ships an English UI on the plain route
+  // bilibili repaints a theme by swapping its theme stylesheet (link#__css_map__: light.css <-> dark.css),
+  // which changes the :root vars but not colours frozen here at build time; the no-toggle fallback reads
+  // body{color:#222} from video.css, a hardcoded grey that stays dark on a dark page. --text2 is the rule
+  // video.css gives .toggle-btn-text itself, so the pill follows the live theme; computed value is only the fallback.
+  const ink = 'var(--text2,' + (cs.color || 'currentColor') + ')';
   const cn = toggle ? /[\u4e00-\u9fff]/.test(ref.textContent || '') : !/^\/en\//.test(location.pathname);
   const T = cn
     ? { label: '字幕', fetching: '获取…', tip: "copy this part's transcript",
@@ -255,7 +261,7 @@ function build() {
   el.textContent = T.label;
   el.title = T.tip;
   [
-    ['display', 'inline-block'], ['background-color', cs.backgroundColor], ['color', cs.color],
+    ['display', 'inline-block'], ['background-color', cs.backgroundColor], ['color', ink],
     ['font-size', cs.fontSize], ['font-family', cs.fontFamily], ['padding', cs.padding],
     ['border-radius', cs.borderRadius], ['line-height', cs.lineHeight], ['cursor', 'pointer'],
     ['box-sizing', 'border-box']
@@ -272,7 +278,7 @@ function build() {
     box.textContent = line;
     box.style.cssText = 'display:block;margin-top:8px;padding:' + cs.padding + ';border-radius:' +
       cs.borderRadius + ';font-size:' + cs.fontSize + ';background:' + cs.backgroundColor +
-      ';color:' + cs.color + ';white-space:pre-wrap';
+      ';color:' + ink + ';white-space:pre-wrap';
     pillHost.appendChild(box);
     setTimeout(() => box.remove(), ms);
   };
@@ -310,9 +316,9 @@ async function run(el, T, note) {
 }
 
 build();
-if (!pill) {
-  // the description block can render after this script runs
-  let tries = 20;
-  const timer = setInterval(() => { build(); if (pill || --tries <= 0) clearInterval(timer); }, 500);
-}
+// bilibili replaces #v_desc wholesale (same id, brand-new node) a few seconds into its own render pass —
+// observed at t=3s on a live watch page — which orphans a pill inserted before the swap. build() no-ops
+// while our pill is in the live document, so this interval re-attaches it after each such rewrite;
+// the old one-shot retry gave up as soon as any pill had been built, which is why it showed only during load.
+setInterval(build, 500);
 })();

@@ -27,7 +27,11 @@ and the tab's cookies ride along. Otherwise it falls back to `fetch` and
 ## Using it
 
 The pill copies the look of the 展开更多 toggle, or of the description block when the page has no
-such toggle: same background, text colour, size and radius. The label follows the page language, 字幕
+such toggle: same size, spacing and radius. The text colour comes from bilibili's own theme variable
+(`--text2`, the one the toggle itself uses) with the computed colour only as a fallback, so the pill
+stays readable when the page switches between its light and dark themes without reloading. Bilibili also
+rebuilds the whole description block a few seconds after the page loads, and the script re-attaches the pill
+when that happens, so it does not vanish once the page settles. The label follows the page language, 字幕
 on a Chinese page and Transcript on the English one; with no toggle to read, the English page is the
 one served under `/en/video/`.
 

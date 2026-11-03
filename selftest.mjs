@@ -9,16 +9,17 @@ const CJK = /[\u4e00-\u9fff]/;
 
 function El(tag, cls = '', txt = '', id = '') {
   const t = { tag, className: cls, id, title: '', text: txt, children: [], parent: null, style: Style(), cssText: '', listeners: {} };
-  return new Proxy(t, {
+  let self;
+  self = new Proxy(t, {
     get: (o, k) => {
       if (k === 'textContent') return o.text;
       if (k === 'style') return o.style;
-      if (k === 'appendChild') return (c) => { c.parent = o; o.children.push(c); return c; };
-      if (k === 'remove') return () => { if (o.parent) o.parent.children = o.parent.children.filter((c) => c !== o); };
+      if (k === 'appendChild') return (c) => { c.parent = self; o.children.push(c); return c; };
+      if (k === 'remove') return () => { if (o.parent) o.parent.children = o.parent.children.filter((c) => c !== self); };
       if (k === 'addEventListener') return (type, fn) => { o.listeners[type] = fn; };
       if (k === 'nextSibling') return null;
       if (k === 'insertBefore') return (n, ref) => {
-        n.parent = o;
+        n.parent = self;
         const i = o.children.indexOf(ref);
         if (i < 0) o.children.push(n); else o.children.splice(i, 0, n);
         return n;
@@ -36,6 +37,7 @@ function El(tag, cls = '', txt = '', id = '') {
       return Reflect.set(o, k, v);
     }
   });
+  return self;
 }
 
 const GREY = { backgroundColor: 'rgb(244, 245, 246)', color: 'rgb(97, 101, 106)', fontSize: '13px', fontFamily: 'Arial', padding: '4px 10px', borderRadius: '4px', lineHeight: '18px' };
@@ -50,7 +52,13 @@ async function scenario(scenarioNo, href, state, toggleText, expectNote, hidden)
   const toggle = toggleText === null ? null : El('div', 'toggle-btn', toggleText);
   if (toggle) { toggle.parent = desc; desc.children.push(toggle); }
 
-  global.document = { body: El('body'), querySelector: (sel) => desc, createElement: (tag) => El(tag) };
+  const body = El('body'); wrap.parent = body;
+  let liveDesc = desc;
+  const inDoc = (n) => { for (let p = n; p; p = p.parent) if (p === body) return true; return false; };
+  global.document = { body, querySelector: (sel) => liveDesc, createElement: (tag) => El(tag), contains: inDoc };
+  const ticks = [];
+  const setInterval = (fn, ms) => { ticks.push(fn); }; // shadow only for eval(src); undici needs the real one
+  const tick = (n) => { for (let i = 0; i < n; i++) ticks.forEach((fn) => fn()); };
   global.window = { __INITIAL_STATE__: state };
   global.location = { href, pathname: new URL(href).pathname };
   if (!navigator.clipboard) navigator.clipboard = { writeText: (t) => Promise.resolve(true) };
@@ -66,8 +74,9 @@ async function scenario(scenarioNo, href, state, toggleText, expectNote, hidden)
   if (!pill) return;
   const cnUi = toggleText === null ? !/\/en\//.test(new URL(href).pathname) : CJK.test(toggleText);
   check('label follows the page language', pill.text === (cnUi ? '字幕' : 'Transcript'));
-  check('style copied verbatim from the toggle',
-    pill.style['background-color'] === GREY.backgroundColor && pill.style['color'] === GREY.color &&
+  check('style copied verbatim from the toggle, colour live-tracked via the theme var',
+    pill.style['background-color'] === GREY.backgroundColor &&
+    pill.style['color'] === 'var(--text2,' + GREY.color + ')' &&
     pill.style['padding'] === GREY.padding && pill.style['border-radius'] === GREY.borderRadius);
   const box = desc.children.includes(pill) ? desc : wrap;
   const anchor = toggle || (hidden ? desc : info); // hidden #v_desc: the pill goes beside the block
@@ -80,6 +89,17 @@ async function scenario(scenarioNo, href, state, toggleText, expectNote, hidden)
   const note = notes[notes.length-1];
   check('pill text restored after the click', pill.text === (cnUi ? '字幕' : 'Transcript'));
   check('failure names the cause (got: ' + (note?note.text:'none') + ')', note && note.text === expectNote);
+  check('the note keeps the same live colour', note && /var\(--text2,/.test(note.style.cssText));
+
+  // bilibili swaps in a brand-new #v_desc node a few seconds into its own render (observed t=3s on a live
+  // page): the pill must follow the replacement, and its old copy must not stay behind in the detached node.
+  const desc2 = El('div', 'video-desc-container', '', 'v_desc');
+  desc.parent = null; desc2.parent = wrap; wrap.children.push(desc2); liveDesc = desc2;
+  tick(3);
+  const pills = desc2.children.concat(wrap.children).filter((c) => c.style['display'] === 'inline-block');
+  check('re-attached to the replacement node (got: ' + pills.length + ')', pills.length === 1 && pills[0] !== pill);
+  check('old copy dropped from wherever it sat (got: ' + (desc.children.includes(pill)) + '/' + wrap.children.includes(pill) + ')',
+    !desc.children.includes(pill) && !wrap.children.includes(pill));
 }
 
 const bv = 'BV1REx46NEc4';
