@@ -2,7 +2,7 @@
 // @name         Bilibili transcript copy
 // @name:zh-CN   B 站 transcript → clipboard
 // @namespace    https://github.com/jeremy/bilibili-transcript-fetcher
-// @version      0.1
+// @version      0.2
 // @description  Add a pill next to the 「展开」/Expand More toggle in the description. One click: fetch the transcript of the part playing now, copy it to the clipboard, report what was copied (no timestamps).
 // @match        *://www.bilibili.com/video/*
 // @match        *://www.bilibili.com/en/video/*
@@ -108,11 +108,11 @@ const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML,
 // GM_xmlhttpRequest bypasses CORS and rides the tab's cookies for api.bilibili.com;
 // in-page fetch is the fallback for managers without it (CORS is open for this origin, but the
 // subtitle CDN was never verified here, so GM is tried first when it exists).
-async function get(url) {
+async function get(url, binary) {
   if (typeof GM_xmlhttpRequest === 'function') {
     const r = await new Promise((done, fail) => {
       GM_xmlhttpRequest({
-        method: 'GET', url, timeout: 15000,
+        method: 'GET', url, timeout: 15000, responseType: binary ? 'arraybuffer' : undefined,
         headers: { Accept: 'application/json,text/plain,*/*', 'User-Agent': UA, Referer: 'https://www.bilibili.com/' },
         onload: done, onerror: () => fail(new Error('network error')),
         ontimeout: () => fail(new Error('timeout'))
@@ -120,12 +120,12 @@ async function get(url) {
     });
     if (r.status === 412) throw new Error('throttled');
     if (r.status < 200 || r.status >= 300) throw new Error('HTTP ' + r.status);
-    return r.responseText;
+    return binary ? new Uint8Array(r.response) : r.responseText;
   }
   const res = await fetch(url, { credentials: 'include' });
   if (res.status === 412) throw new Error('throttled');
   if (!res.ok) throw new Error('HTTP ' + res.status);
-  return await res.text();
+  return binary ? new Uint8Array(await res.arrayBuffer()) : await res.text();
 }
 
 async function getJson(url) {
@@ -148,7 +148,9 @@ async function wbiKeys() {
 }
 
 // aid/cid/pages come from the page's own state (no request); it can lag a part switch, so a
-// bvid mismatch or a missing part number goes to the pagelist API rather than guessing P1.
+// bvid mismatch or a missing part number goes to the view API rather than guessing P1. A userscript
+// sandbox usually cannot see the page state at all, and the subtitle endpoint needs the aid, which the
+// view API carries (pagelist does not).
 async function context() {
   const href = location.href;
   const bv = (href.match(/BV[0-9A-Za-z]{10}/) || [])[0];
@@ -159,45 +161,116 @@ async function context() {
   const st = window.__INITIAL_STATE__;
   const vd = st && st.videoData;
   const pages = vd && Array.isArray(vd.pages) ? vd.pages : null;
-  if (vd && vd.bvid === bv && pages) {
+  if (vd && vd.bvid === bv && vd.aid && pages) {
     const found = pages.find((x) => Number(x.page) === wanted) || (wanted === 1 ? pages[0] : null);
     if (found && (found.cid || vd.cid)) {
       return { bvid: bv, aid: vd.aid, cid: Number(found.cid || vd.cid), page: wanted,
         pageCount: pages.length, part: found.part || '' };
     }
   }
-  const data = await getJson(API + '/x/player/pagelist?bvid=' + encodeURIComponent(bv));
-  if (data.code !== 0 || !data.data || !data.data.length) throw new Error('pagelist failed: ' + data.code);
-  const list = data.data;
+  const data = await getJson(API + '/x/web-interface/view?bvid=' + encodeURIComponent(bv));
+  const list = data.data && data.data.pages;
+  if (data.code !== 0 || !list || !list.length || !data.data.aid) throw new Error('view failed: ' + data.code);
   const found = list.find((x) => Number(x.page) === wanted) || (wanted === 1 ? list[0] : null);
   if (!found) throw new Error('part ' + wanted + ' does not exist (this video has ' + list.length + ')');
-  return { bvid: bv, cid: found.cid, page: wanted, pageCount: list.length,
+  return { bvid: bv, aid: data.data.aid, cid: found.cid, page: wanted, pageCount: list.length,
     part: found.part || '' };
 }
 
+// Minimal protobuf reader: [field, wireType, value]; value is a byte slice for length-delimited fields,
+// a number for varints (only used as an enum here, so >2^53 precision loss does not matter).
+function pbRead(buf) {
+  const out = [];
+  let i = 0;
+  const varint = () => {
+    let v = 0, m = 1, b;
+    do {
+      if (i >= buf.length) throw new Error('truncated protobuf');
+      b = buf[i++]; v += (b & 0x7f) * m; m *= 128;
+    } while (b & 0x80);
+    return v;
+  };
+  while (i < buf.length) {
+    const key = varint(), field = Math.floor(key / 8), wire = key % 8;
+    if (wire === 0) out.push([field, wire, varint()]);
+    else if (wire === 2) {
+      const n = varint();
+      if (i + n > buf.length) throw new Error('truncated protobuf');
+      out.push([field, wire, buf.subarray(i, i + n)]); i += n;
+    } else if (wire === 1) i += 8;
+    else if (wire === 5) i += 4;
+    else throw new Error('protobuf wire type ' + wire);
+  }
+  return out;
+}
+
+// The player de-obfuscates //subtitle.bilibili.com/<x>?<q> into //aisubtitle.hdslb.com/<path>?<q>:
+// x is URI-decoded, XORed with key+"bilibili", and must start with the paired prefix. Pairs copied
+// from the player (core.*.js, next to HttpSubtitleView). A URL that does not match is used as-is,
+// the same fallback the player takes.
+const SUB_URL_KEYS = [
+  ["nP](wOFRvU.+<fjS{jn-!$D|Dz&\",zT`", "=CFxYRn{.y|uVyO$uh&sikph?N.ilF/`"],
+  ["Bn\"q~|albg@]Go~ACgyDvKnd+)_D}^&J?", "Cu~L!xs~f^&r@'vh=q]q{eeng*sEg^kp#J"]
+];
+function realSubtitleUrl(url) {
+  const [path, query] = [url.split('?')[0], url.split('?')[1]];
+  const m = path.match(/\/\/subtitle\.bilibili\.com\/([^?]+)/);
+  if (!m) return url;
+  for (const [prefix, key] of SUB_URL_KEYS) {
+    let y;
+    try { y = decodeURIComponent(m[1]); } catch (e) { return url; }
+    const k = key + 'bilibili';
+    let s = '';
+    for (let i = 0; i < y.length; i++) s += String.fromCharCode(y.charCodeAt(i) ^ k.charCodeAt(i % k.length));
+    if (s.startsWith(prefix)) return '//aisubtitle.hdslb.com' + s.split(prefix)[1] + (query ? '?' + query : '');
+  }
+  return url;
+}
+
+// The track list comes from /x/v2/subtitle/web/view (protobuf), the only source the player reads it from.
+// /x/player/wbi/v2 still has a `subtitle` field, but the player only takes need_login_subtitle from it, and
+// a logged-in tab gets an empty list there often enough that one click in several came back with nothing.
 async function tracks(ctx) {
   let keys = await wbiKeys();
-  let j = null;
+  let bytes = null;
   for (let attempt = 0; attempt < 2; attempt++) {
-    const s = signedQuery({ bvid: ctx.bvid, aid: ctx.aid, cid: ctx.cid }, keys.mixin);
+    const s = signedQuery({ oid: ctx.cid, pid: ctx.aid, type: 1, context_ext: '{"video_type":1}',
+      cur_production_type: 0, playlist_switch: 0, web_location: 1315873 }, keys.mixin);
+    let code = 0;
     try {
-      j = await getJson(API + '/x/player/wbi/v2?' + s.query + '&w_rid=' + s.wRid);
+      bytes = await get(API + '/x/v2/subtitle/web/view?' + s.query + '&w_rid=' + s.wRid, true);
     } catch (e) {
-      if (String(e.message).indexOf('throttled') >= 0) {
-        if (attempt === 0) { cache.mixin = null; keys = await wbiKeys(); continue; }
-        throw new Error('throttled');
-      }
-      throw e;
+      if (String(e.message).indexOf('throttled') < 0) throw e;
+      code = 412;
     }
-    if (j.code === -352 || j.code === -403) {
-      if (attempt === 0) { cache.mixin = null; keys = await wbiKeys(); continue; }
-      throw new Error('signature rejected: ' + j.code);
+    // an error answer is JSON, not protobuf
+    if (!code && bytes[0] === 0x7b) {
+      let j = null;
+      try { j = JSON.parse(new TextDecoder().decode(bytes)); } catch (e) { /* protobuf after all */ }
+      if (j && typeof j.code === 'number') code = j.code;
+      if (code && code !== -352 && code !== -403) throw new Error('subtitle API: ' + code + ' ' + (j.message || ''));
     }
-    break;
+    if (!code) break;
+    if (attempt === 0) { cache.mixin = null; keys = await wbiKeys(); continue; }
+    throw new Error(code === 412 ? 'throttled' : 'signature rejected: ' + code);
   }
-  if (j.code !== 0) throw new Error('player API: ' + j.code + ' ' + (j.message || ''));
-  const subs = j.data && j.data.subtitle && j.data.subtitle.subtitles;
-  return Array.isArray(subs) ? subs.filter((t) => t.subtitle_url || t.subtitle_url_v2) : [];
+  const utf8 = (b) => new TextDecoder().decode(b);
+  const list = [];
+  for (const [f1, w1, sub] of pbRead(bytes)) {
+    if (f1 !== 1 || w1 !== 2) continue; // SubtitleViewReply.subtitle
+    for (const [f2, w2, item] of pbRead(sub)) {
+      if (f2 !== 3 || w2 !== 2) continue; // VideoSubtitle.subtitles
+      const t = {};
+      for (const [f, w, v] of pbRead(item)) {
+        if (w !== 2) continue;
+        if (f === 3) t.lan = utf8(v);
+        else if (f === 4) t.lan_doc = utf8(v);
+        else if (f === 5) t.subtitle_url = realSubtitleUrl(utf8(v));
+      }
+      if (t.subtitle_url) list.push(t);
+    }
+  }
+  return list;
 }
 
 function pickTrack(tracks) {

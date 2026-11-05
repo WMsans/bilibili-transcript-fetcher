@@ -54,7 +54,7 @@ says which one was used.
 
 | You see | It means |
 |---|---|
-| `subtitle list empty — this tab is not logged in (AI subtitles also come back empty logged out)` | Login-gated tracks come back empty when logged out. An empty list is reported as a login problem, never as a missing subtitle. |
+| `subtitle list empty — this tab is not logged in (AI subtitles also come back empty logged out)` | AI tracks are only listed for a logged-in tab (uploaded CC tracks copy either way). An empty list in a logged-out tab is reported as a login problem, never as a missing subtitle. |
 | `no subtitle track for this part` | Logged in, and the part really has none. |
 | `B 站 throttled this IP（风控）— retry later` | Risk control answered. The script refreshes its keys, retries once, then stops. |
 | `copy failed: <reason>` | Anything else: HTTP status, a body that is not JSON, a refused clipboard. |
@@ -62,12 +62,19 @@ says which one was used.
 
 ## How it works
 
-`window.__INITIAL_STATE__` or the part list identifies the video, `x/web-interface/nav` supplies the
-current WBI keys, a signed `x/player/wbi/v2` call returns the subtitle list, and each track body is
-plain JSON.
+`window.__INITIAL_STATE__` or `x/web-interface/view` identifies the video (aid, cid, part),
+`x/web-interface/nav` supplies the current WBI keys, a signed `x/v2/subtitle/web/view` call returns the
+subtitle list as protobuf, and each track body is plain JSON.
 
-The signature is the point. Under risk control the unsigned player endpoint answers HTTP 200 with
-valid JSON carrying another video's subtitles, and the response gives no hint. When a signature is
+That endpoint is the one the player reads its subtitle menu from. `x/player/wbi/v2` still carries a
+`subtitle` field, but the player only takes `need_login_subtitle` from that response, and for a
+logged-in tab the list there was often empty — the earlier versions read it, which is why a click
+sometimes copied nothing and a later click worked. Track URLs in the protobuf come obfuscated as
+`//subtitle.bilibili.com/…`; the script reverses that the same way the player does, into an
+`aisubtitle.hdslb.com` URL with its `auth_key`.
+
+The signature is the point. Under risk control the unsigned player endpoint answered HTTP 200 with
+valid JSON carrying another video's subtitles, and the response gave no hint. When a signature is
 rejected (`-352`, `-403`, HTTP 412) the script drops the cached keys and retries once. Keys live for
 10 minutes per tab.
 
