@@ -1,7 +1,8 @@
 # Bilibili transcript copy
 
 A userscript that puts one pill in a B站 video description, after the 「展开更多」 toggle when a long
-description has one and under the text when a short description has no toggle. Click
+description has one, under the text when a short description has no toggle, and in the toolbar row under
+the player when the video has no description at all. Click
 it and the transcript of the part playing now goes to your clipboard.
 
 ![A screenshot from the B站 watch page](img/screenshot.png)
@@ -31,7 +32,10 @@ such toggle: same size, spacing and radius. The text colour comes from bilibili'
 (`--text2`, the one the toggle itself uses) with the computed colour only as a fallback, so the pill
 stays readable when the page switches between its light and dark themes without reloading. Bilibili also
 rebuilds the whole description block a few seconds after the page loads, and the script re-attaches the pill
-when that happens, so it does not vanish once the page settles. The label follows the page language, 字幕
+when that happens, so it does not vanish once the page settles. It only ever appends the pill as the last
+child of its anchor: a node wedged between two of bilibili's own blocks makes the page's Vue mount the next
+sibling into the wrong node and throw, which left every video with no description half-rendered — so there
+the pill goes at the end of the toolbar row under the player instead. The label follows the page language, 字幕
 on a Chinese page and Transcript on the English one; with no toggle to read, the English page is the
 one served under `/en/video/`.
 
@@ -39,7 +43,7 @@ Click it and:
 
 1. the label changes to 获取… or Fetching…
 2. the transcript lands on the clipboard as plain text, one cue per line, timestamps dropped
-3. a note under the description reports the character count, which track and which part, then fades
+3. a note under the pill reports the character count, which track and which part, then fades
    out after a few seconds
 4. the label returns to normal
 

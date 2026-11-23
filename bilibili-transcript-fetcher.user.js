@@ -2,7 +2,7 @@
 // @name         Bilibili transcript copy
 // @name:zh-CN   B 站 transcript → clipboard
 // @namespace    https://github.com/jeremy/bilibili-transcript-fetcher
-// @version      0.2
+// @version      0.3
 // @description  Add a pill next to the 「展开」/Expand More toggle in the description. One click: fetch the transcript of the part playing now, copy it to the clipboard, report what was copied (no timestamps).
 // @match        *://www.bilibili.com/video/*
 // @match        *://www.bilibili.com/en/video/*
@@ -302,11 +302,18 @@ function build() {
   if (!h) return;
   const toggle = h.querySelector('.toggle-btn');
   const hidden = getComputedStyle(h).display === 'none'; // an empty description hides #v_desc itself
+  // A node between two of .left-container's children desyncs bilibili's Vue: it then mounts the sibling
+  // after it (video-tag-container) into the whitespace text node it expects there and throws
+  // HierarchyRequestError on every load of a video with no description, and that panel never renders.
+  // Only a trailing insert is safe, so a video with no description gets the pill in the toolbar row.
+  const bar = hidden
+    ? (document.querySelector('.video-toolbar-left') || document.querySelector('.video-toolbar-container'))
+    : null;
   // a description short enough to fit has no 「展开」toggle at all, so anchor on the block, not the toggle
-  const at = toggle ? toggle.parentNode : (hidden && h.parentNode ? h.parentNode : h);
+  const at = toggle ? toggle.parentNode : (bar || h);
   if (pill && pillHost === at && document.contains(pill)) return; // ours is still in the live document
   if (pill) pill.remove(); // host rebuilt around our old copy: drop it, do not leave a second pill
-  const ref = h.querySelector('.toggle-btn-text') || toggle || h;
+  const ref = h.querySelector('.toggle-btn-text') || toggle || (bar && bar.querySelector('.video-toolbar-item-text')) || h;
   const cs = getComputedStyle(ref); // look like the existing toggle, do not invent a style
   // no toggle to read the language off: shortcut: the /en/video/ route is the only signal then, upgrade
   // if bilibili ever ships an English UI on the plain route
@@ -339,20 +346,24 @@ function build() {
     ['border-radius', cs.borderRadius], ['line-height', cs.lineHeight], ['cursor', 'pointer'],
     ['box-sizing', 'border-box']
   ].forEach((p) => { if (p[1]) el.style[p[0]] = p[1]; });
+  // the toolbar's own text has no box around it: give the pill the page's chip background and a click target
+  if (bar) el.style.cssText += ';background:var(--graph_bg_regular,#F1F2F3);padding:0 10px;border-radius:6px';
 
-  if (toggle) at.insertBefore(el, toggle.nextSibling); // insertBefore(x, null) appends, as before
-  else if (hidden) at.insertBefore(el, h.nextSibling); // inside a display:none parent nothing renders
-  else at.appendChild(el);
+  at.appendChild(el); // last child only — see above, a foreign node in the middle breaks the page
   pill = el;
   pillHost = at;
 
   const note = (line, ms) => {
     const box = document.createElement('div');
     box.textContent = line;
-    box.style.cssText = 'display:block;margin-top:8px;padding:' + cs.padding + ';border-radius:' +
-      cs.borderRadius + ';font-size:' + cs.fontSize + ';background:' + cs.backgroundColor +
-      ';color:' + ink + ';white-space:pre-wrap';
-    pillHost.appendChild(box);
+    const r = el.getBoundingClientRect();
+    const ps = getComputedStyle(el); // the note copies the pill's current look, live theme included
+    // floats under the pill instead of joining the flow: a block inside the toolbar row would stretch it
+    box.style.cssText = 'position:absolute;z-index:2147483647;max-width:360px;white-space:pre-wrap;left:' +
+      Math.round(r.left + scrollX) + 'px;top:' + Math.round(r.bottom + scrollY + 6) + 'px;padding:' +
+      ps.padding + ';border-radius:' + ps.borderRadius + ';font-size:' + ps.fontSize +
+      ';background:var(--bg1,' + ps.backgroundColor + ');color:' + ps.color; // solid: it covers page text
+    document.body.appendChild(box);
     setTimeout(() => box.remove(), ms);
   };
   el.addEventListener('click', () => run(el, T, note));

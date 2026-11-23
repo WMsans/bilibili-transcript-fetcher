@@ -18,6 +18,7 @@ function El(tag, cls = '', txt = '', id = '') {
       if (k === 'remove') return () => { if (o.parent) o.parent.children = o.parent.children.filter((c) => c !== self); };
       if (k === 'addEventListener') return (type, fn) => { o.listeners[type] = fn; };
       if (k === 'nextSibling') return null;
+      if (k === 'getBoundingClientRect') return () => ({ left: 116, top: 663, right: 176, bottom: 691, width: 60, height: 28 });
       if (k === 'insertBefore') return (n, ref) => {
         n.parent = self;
         const i = o.children.indexOf(ref);
@@ -53,9 +54,15 @@ async function scenario(scenarioNo, href, state, toggleText, expectNote, hidden,
   if (toggle) { toggle.parent = desc; desc.children.push(toggle); }
 
   const body = El('body'); wrap.parent = body;
+  const bar = El('div', 'video-toolbar-left', '', 'arc_toolbar_report');
+  bar.parent = body; body.children.push(bar);
   let liveDesc = desc;
   const inDoc = (n) => { for (let p = n; p; p = p.parent) if (p === body) return true; return false; };
-  global.document = { body, querySelector: (sel) => liveDesc, createElement: (tag) => El(tag), contains: inDoc };
+  global.document = { body,
+    // the real page keeps the description and the toolbar apart; the toolbar is only used when the
+    // description is hidden, i.e. the video has none
+    querySelector: (sel) => (sel.indexOf('video-toolbar') >= 0 ? bar : liveDesc),
+    createElement: (tag) => El(tag), contains: inDoc };
   const ticks = [];
   const setInterval = (fn, ms) => { ticks.push(fn); }; // shadow only for eval(src); undici needs the real one
   const tick = (n) => { for (let i = 0; i < n; i++) ticks.forEach((fn) => fn()); };
@@ -64,6 +71,7 @@ async function scenario(scenarioNo, href, state, toggleText, expectNote, hidden,
   if (!navigator.clipboard) navigator.clipboard = { writeText: (t) => Promise.resolve(true) };
   let copied = null;
   navigator.clipboard.writeText = (t) => { copied = t; return Promise.resolve(true); };
+  global.scrollX = 0; global.scrollY = 0;
   global.getComputedStyle = (e) => e && e.hidden ? { ...GREY, display: 'none' } : GREY;
 
   const realFetch = globalThis.fetch;
@@ -71,7 +79,7 @@ async function scenario(scenarioNo, href, state, toggleText, expectNote, hidden,
   eval(src);
 
   console.log('SCENARIO', scenarioNo);
-  const pill = desc.children.concat(wrap.children).find((c) => c.style['display'] === 'inline-block');
+  const pill = desc.children.concat(wrap.children, bar.children).find((c) => c.style['display'] === 'inline-block');
   check('pill injected', !!pill);
   if (!pill) return;
   const cnUi = toggleText === null ? !/\/en\//.test(new URL(href).pathname) : CJK.test(toggleText);
@@ -80,18 +88,24 @@ async function scenario(scenarioNo, href, state, toggleText, expectNote, hidden,
     pill.style['background-color'] === GREY.backgroundColor &&
     pill.style['color'] === 'var(--text2,' + GREY.color + ')' &&
     pill.style['padding'] === GREY.padding && pill.style['border-radius'] === GREY.borderRadius);
-  const box = desc.children.includes(pill) ? desc : wrap;
-  const anchor = toggle || (hidden ? desc : info); // hidden #v_desc: the pill goes beside the block
-  check('inserted after the toggle or the description, not at page end',
-    box.children.indexOf(pill) === box.children.indexOf(anchor) + 1);
+  // A pill between two of bilibili's children makes its Vue mount the next sibling into the whitespace
+  // text node it expects there and throw (verified on a live no-description page: one uncaught
+  // HierarchyRequestError per load, and the tag panel never rendered). Last child only.
+  const atEl = pill.parent;
+  check('appended as the last child of its anchor (got index ' + (atEl ? atEl.children.indexOf(pill) : '?') +
+    ' of ' + (atEl ? atEl.children.length : '?') + ')',
+    !!atEl && atEl.children.indexOf(pill) === atEl.children.length - 1);
+  check('no description: the pill sits in the toolbar row (got: ' + (atEl === bar) + ')', !hidden || atEl === bar);
 
   await pill.listeners.click();
-  const notes = desc.children.concat(wrap.children).filter((c) => c.style.cssText && c !== pill);
+  const notes = body.children.filter((c) => c.style.cssText && c !== pill);
   console.log('notes:', notes.length, '->', notes.map(n=>n.text));
   const note = notes[notes.length-1];
   check('pill text restored after the click', pill.text === (cnUi ? '字幕' : 'Transcript'));
   check('failure names the cause (got: ' + (note?note.text:'none') + ')', note && note.text === expectNote);
-  check('the note keeps the same live colour', note && /var\(--text2,/.test(note.style.cssText));
+  check('the note copies the pill\'s text look and gets a solid background to cover page text',
+    note && note.style.cssText.indexOf('color:' + GREY.color) >= 0 &&
+    note.style.cssText.indexOf('background:var(--bg1,') >= 0);
 
   // bilibili swaps in a brand-new #v_desc node a few seconds into its own render (observed t=3s on a live
   // page): the pill must follow the replacement, and its old copy must not stay behind in the detached node.
@@ -100,8 +114,9 @@ async function scenario(scenarioNo, href, state, toggleText, expectNote, hidden,
   tick(3);
   const pills = desc2.children.concat(wrap.children).filter((c) => c.style['display'] === 'inline-block');
   check('re-attached to the replacement node (got: ' + pills.length + ')', pills.length === 1 && pills[0] !== pill);
-  check('old copy dropped from wherever it sat (got: ' + (desc.children.includes(pill)) + '/' + wrap.children.includes(pill) + ')',
-    !desc.children.includes(pill) && !wrap.children.includes(pill));
+  check('old copy dropped from wherever it sat (got: ' + (desc.children.includes(pill)) + '/' + wrap.children.includes(pill) +
+    '/' + bar.children.includes(pill) + ')',
+    !desc.children.includes(pill) && !wrap.children.includes(pill) && !bar.children.includes(pill));
 
   globalThis.fetch = realFetch;
   return { notes, copied };
